@@ -378,7 +378,8 @@ class MainWindow(QMainWindow):
     def _scan_finished(self, summary: dict):
         self._populate_scope()
         self.search_status.setText(
-            f"扫描完成：发现 {summary['found']} 个文件，新增或更新 {summary['converted']} 个，"
+            f"扫描完成：发现 {summary['found']} 个文件，新增或转换 {summary['converted']} 个，"
+            f"索引更新 {summary.get('reindexed', 0)} 个，"
             f"失败 {summary['failed']} 个，未变化 {summary['skipped']} 个。"
         )
         self.statusBar().showMessage("JPG 库已同步")
