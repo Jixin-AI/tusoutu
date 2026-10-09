@@ -2,39 +2,66 @@ from __future__ import annotations
 
 import sys
 import time
+import math
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QPointF, QRectF, QSize, QSettings, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QImage, QImageReader, QPen, QPixmap
+from PySide6.QtGui import QBrush, QColor, QDesktopServices, QFont, QImage, QImageReader, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
-    QComboBox,
     QDialog,
     QFileDialog,
-    QFormLayout,
     QGraphicsRectItem,
     QGraphicsScene,
+    QGraphicsTextItem,
     QGraphicsView,
-    QGroupBox,
+    QFrame,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
-    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QProgressBar,
-    QSpinBox,
-    QSplitter,
-    QTableWidget,
     QTableWidgetItem,
-    QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from library import format_elapsed, scan_and_convert, search_images
+from pixel_workbench import PixelWorkbench
+
+
+WORKBENCH_STYLE = """
+QMainWindow, QWidget { color: #3d352c; font-family: 'Microsoft YaHei UI'; font-size: 10pt; background: #f2e5d1; }
+QLabel { background: transparent; color: #5a4a3b; }
+QLabel#brand { color: #42362b; font-size: 20pt; font-weight: 700; }
+QLabel#eyebrow { color: #7b5c43; font-size: 9pt; }
+QLabel#statusBadge { color: #385b3f; background: #d8e3c6; border: 2px solid #526b48; padding: 6px 12px; }
+QGroupBox { background: #fff8ec; border: 2px solid #574638; margin-top: 12px; padding: 12px; }
+QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; color: #684a34; font-weight: 700; background: #f2e5d1; }
+QLineEdit, QSpinBox, QComboBox { color: #3d352c; background: #fffdf6; border: 2px solid #92745a; padding: 6px 8px; selection-background-color: #c85a43; }
+QLineEdit:focus, QSpinBox:focus, QComboBox:focus { border: 2px solid #526b48; }
+QPushButton { color: #3d352c; background: #e8c997; border: 2px solid #574638; padding: 7px 12px; font-weight: 600; }
+QPushButton:hover { background: #f2dcae; }
+QPushButton:pressed { background: #d5a86b; }
+QPushButton:disabled { color: #9b9084; background: #e6dfd3; border-color: #b4a796; }
+QTreeWidget, QTableWidget { color: #3d352c; background: #fffdf6; alternate-background-color: #f5ebdc; border: 2px solid #92745a; gridline-color: #d7c5ac; selection-background-color: #d9e1c7; selection-color: #273d2c; outline: 0; }
+QHeaderView::section { color: #493a2e; background: #e8d7bc; border: none; border-bottom: 2px solid #92745a; padding: 7px 8px; font-weight: 700; }
+QProgressBar { color: #3d352c; background: #fffdf6; border: 2px solid #574638; min-height: 14px; max-height: 14px; text-align: center; }
+QProgressBar::chunk { background: #718b59; }
+QScrollBar:vertical { background: #e6d8c3; width: 12px; margin: 2px; }
+QScrollBar::handle:vertical { background: #ad8b64; min-height: 28px; }
+QScrollBar:horizontal { background: #e6d8c3; height: 12px; margin: 2px; }
+QScrollBar::handle:horizontal { background: #ad8b64; min-width: 28px; }
+QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+QMenu { color: #3d352c; background: #fff8ec; border: 2px solid #574638; }
+QMenu::item:selected { background: #d9e1c7; }
+QToolTip { color: #3d352c; background: #fff8ec; border: 1px solid #92745a; padding: 5px; }
+QStatusBar { color: #6f5d49; background: #eadbc4; border-top: 2px solid #92745a; }
+QTabWidget::pane { border: 2px solid #574638; background: #f8efdf; }
+QTabBar::tab { color: #493a2e; background: #e5d2b4; border: 2px solid #574638; padding: 9px 18px; margin-right: 4px; }
+QTabBar::tab:selected { color: #fff8ec; background: #58734d; }
+"""
 
 
 class TaskThread(QThread):
@@ -144,11 +171,195 @@ class CropDialog(QDialog):
         self.accept()
 
 
+class SearchResultsView(QGraphicsView):
+    open_requested = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.graphics_scene = QGraphicsScene(self)
+        self.setScene(self.graphics_scene)
+        self.setBackgroundBrush(QColor("#f8efdf"))
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setMinimumHeight(260)
+        self.flow_paths = []
+        self.flow_phase = 0.0
+        self.flow_timer = QTimer(self)
+        self.flow_timer.timeout.connect(self._advance_flow)
+        self.flow_timer.start(160)
+        self._show_empty("上传或粘贴图片后开始搜索")
+
+    def _advance_flow(self):
+        if self.flow_paths:
+            self.flow_phase = (self.flow_phase + 0.012) % 1
+            self.viewport().update()
+
+    def drawForeground(self, painter, rect):
+        super().drawForeground(painter, rect)
+        painter.save()
+        painter.setPen(Qt.PenStyle.NoPen)
+        for index, path in enumerate(self.flow_paths[:36]):
+            point = path.pointAtPercent((self.flow_phase + index * 0.071) % 1)
+            size = 5 if index % 2 else 7
+            painter.fillRect(round(point.x()), round(point.y()), size, size, QColor("#c85a43"))
+        painter.restore()
+
+    def _show_empty(self, message: str):
+        self.graphics_scene.clear()
+        self.flow_paths.clear()
+        text = self.graphics_scene.addText(message)
+        text.setDefaultTextColor(QColor("#745d45"))
+        text.setPos(32, 32)
+        self.graphics_scene.setSceneRect(0, 0, 720, 120)
+
+    def _node(self, x: float, center_y: float, width: float, height: float, label: str, root=False):
+        node = QGraphicsRectItem(x, center_y - height / 2, width, height)
+        node.setBrush(QBrush(QColor("#d9e3c5") if root else QColor("#fff8ec")))
+        node.setPen(QPen(QColor("#526b48") if root else QColor("#92745a"), 2))
+        self.graphics_scene.addItem(node)
+        text = QGraphicsTextItem()
+        text.setPlainText(label)
+        text.setFont(QFont("Microsoft YaHei UI", 10))
+        text.setDefaultTextColor(QColor("#493a2e"))
+        text.setTextWidth(width - 24)
+        text.setPos(x + 12, center_y - text.boundingRect().height() / 2)
+        self.graphics_scene.addItem(text)
+        return node
+
+    def set_results(self, results: list[dict], root_label: str, scope: str = ""):
+        if not results:
+            self._show_empty("没有找到匹配图案")
+            return
+
+        self.graphics_scene.clear()
+        self.flow_paths.clear()
+        ordered = sorted(results, key=lambda item: item["score"], reverse=True)
+        folders: dict[str, dict] = {}
+        paths: list[list[str]] = []
+        for index, result in enumerate(ordered):
+            relative = result.get("relative_path", "").replace("\\", "/").strip("/")
+            normalized_scope = scope.replace("\\", "/").strip("/")
+            if normalized_scope and (relative == normalized_scope or relative.startswith(normalized_scope + "/")):
+                relative = relative[len(normalized_scope):].strip("/")
+            parts = [part for part in relative.split("/") if part and part != "."][:-1]
+            paths.append(parts)
+            prefix = []
+            for part in parts:
+                prefix.append(part)
+                key = "/".join(prefix)
+                folders.setdefault(key, {"name": part, "depth": len(prefix), "rows": []})["rows"].append(index)
+
+        row_gap = 116
+        top = 60
+        file_x = 300 + max((len(parts) for parts in paths), default=0) * 190
+        image_x = file_x + 380
+        result_centers = [top + index * row_gap for index in range(len(ordered))]
+        folder_positions = {
+            key: (260 + (node["depth"] - 1) * 190, sum(result_centers[i] for i in node["rows"]) / len(node["rows"]))
+            for key, node in folders.items()
+        }
+        root_y = sum(result_centers) / len(result_centers)
+        edges = QPen(QColor("#92745a"), 2, Qt.PenStyle.DashLine)
+        for key, (x, y) in folder_positions.items():
+            parent = key.rpartition("/")[0]
+            parent_x, parent_y = folder_positions[parent] if parent else (38, root_y)
+            parent_width = 150 if parent else 190
+            path = QPainterPath()
+            path.moveTo(parent_x + parent_width, parent_y)
+            mid_x = (parent_x + parent_width + x) / 2
+            path.cubicTo(mid_x, parent_y, mid_x, y, x, y)
+            self.graphics_scene.addPath(path, edges)
+            self.flow_paths.append(path)
+
+        for index, (result, parts, y) in enumerate(zip(ordered, paths, result_centers)):
+            parent = "/".join(parts)
+            if parent:
+                parent_x, parent_y = folder_positions[parent]
+                start_x = parent_x + 150
+            else:
+                parent_x, parent_y, start_x = 38, root_y, 228
+            path = QPainterPath()
+            path.moveTo(start_x, parent_y)
+            mid_x = (start_x + file_x) / 2
+            path.cubicTo(mid_x, parent_y, mid_x, y, file_x, y)
+            self.graphics_scene.addPath(path, edges)
+            self.flow_paths.append(path)
+
+            path = QPainterPath()
+            path.moveTo(file_x + 330, y)
+            mid_x = (file_x + 330 + image_x) / 2
+            path.cubicTo(mid_x, y, mid_x, y, image_x, y)
+            self.graphics_scene.addPath(path, edges)
+            self.flow_paths.append(path)
+
+        self._node(38, root_y, 220, 64, "总路径\n" + root_label, root=True)
+        for key, node_data in folders.items():
+            x, y = folder_positions[key]
+            self._node(x, y, 150, 42, "▰  " + node_data["name"])
+
+        file_width, file_height = 330, 64
+        for result, y in zip(ordered, result_centers):
+            file_node = self._node(file_x, y, file_width, file_height, "文件路径\n" + result["source_path"])
+            file_node.setData(0, result["source_path"])
+
+        card_width, card_height = 270, 96
+        for result, y in zip(ordered, result_centers):
+            card = QGraphicsRectItem(image_x, y - card_height / 2, card_width, card_height)
+            card.setBrush(QBrush(QColor("#fff8ec")))
+            card.setPen(QPen(QColor("#92745a"), 2))
+            card.setData(0, result["source_path"])
+            self.graphics_scene.addItem(card)
+            reader = QImageReader(result.get("output_path", ""))
+            reader.setScaledSize(QSize(76, 76))
+            image = reader.read()
+            if not image.isNull():
+                preview = self.graphics_scene.addPixmap(QPixmap.fromImage(image))
+                preview.setPos(image_x + 10, y - 38)
+                preview.setData(0, result["source_path"])
+            name = QGraphicsTextItem()
+            name.setPlainText("结果图\n" + Path(result["source_path"]).name)
+            name.setFont(QFont("Microsoft YaHei UI", 9))
+            name.setDefaultTextColor(QColor("#493a2e"))
+            name.setPos(image_x + 96, y - 34)
+            name.setData(0, result["source_path"])
+            self.graphics_scene.addItem(name)
+            detail = QGraphicsTextItem()
+            detail.setPlainText(f"相似度 {result['score']}%  ·  页码 {result['page'] or '—'}")
+            detail.setFont(QFont("Microsoft YaHei UI", 9))
+            detail.setDefaultTextColor(QColor("#58734d"))
+            detail.setPos(image_x + 96, y + 24)
+            detail.setData(0, result["source_path"])
+            self.graphics_scene.addItem(detail)
+
+        max_x = image_x + card_width + 48
+        max_y = top + len(ordered) * row_gap + 32
+        self.graphics_scene.setSceneRect(0, 0, max_x, max_y)
+        self._node(38, root_y, 220, 64, "总路径\n" + root_label, root=True)
+
+    def mouseDoubleClickEvent(self, event):
+        item = self.itemAt(event.position().toPoint())
+        while item and item.data(0) is None:
+            item = item.parentItem()
+        if item and item.data(0):
+            self.open_requested.emit(item.data(0))
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
+            self.scale(factor, factor)
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("花型图搜图")
-        self.resize(1180, 800)
+        self.setWindowTitle("花型书报亭")
+        self.resize(1440, 920)
         self.settings = QSettings("JixinAI", "FlowerSearch")
         self.source_root = Path(self.settings.value("source_root", "")) if self.settings.value("source_root", "") else None
         self.output_root = Path(self.settings.value("output_root", "")) if self.settings.value("output_root", "") else None
@@ -161,132 +372,33 @@ class MainWindow(QMainWindow):
         self.search_clock.timeout.connect(self._update_search_clock)
         self.search_started = 0.0
         self._build_ui()
+        if self.source_root and not self._source_is_dir():
+            self.source_root = self.output_root = None
+            self.settings.remove("source_root")
+            self.settings.remove("output_root")
         self._refresh_paths()
-        if self.source_root and self.source_root.is_dir():
+        if self.source_root:
             self._populate_scope()
 
     def _build_ui(self):
-        central = QWidget()
-        root_layout = QVBoxLayout(central)
+        self.pixel_workbench = PixelWorkbench(self, SearchResultsView)
+        self.setCentralWidget(self.pixel_workbench.build())
+        self.statusBar().showMessage("就绪 · 书架已准备好")
 
-        folders = QGroupBox("花型库与 JPG 库")
-        folder_form = QFormLayout(folders)
-        source_row = QHBoxLayout()
-        self.source_edit = QLineEdit()
-        self.source_edit.setReadOnly(True)
-        source_button = QPushButton("选择花型库")
-        source_button.clicked.connect(self.choose_source)
-        source_row.addWidget(self.source_edit, 1)
-        source_row.addWidget(source_button)
-        output_row = QHBoxLayout()
-        self.output_edit = QLineEdit()
-        self.output_edit.setReadOnly(True)
-        output_button = QPushButton("选择 JPG 库")
-        output_button.clicked.connect(self.choose_output)
-        output_row.addWidget(self.output_edit, 1)
-        output_row.addWidget(output_button)
-        folder_form.addRow("源文件夹", source_row)
-        folder_form.addRow("转换文件夹", output_row)
-
-        controls = QHBoxLayout()
-        self.scan_button = QPushButton("立即扫描并转换")
-        self.scan_button.clicked.connect(self.start_scan)
-        self.monitor_button = QPushButton("开始自动监测")
-        self.monitor_button.clicked.connect(self.toggle_monitor)
-        self.interval_value = QSpinBox()
-        self.interval_value.setRange(1, 168)
-        self.interval_value.setValue(1)
-        self.interval_unit = QComboBox()
-        self.interval_unit.addItem("小时", "hours")
-        self.interval_unit.addItem("天", "days")
-        self.interval_value.valueChanged.connect(self._update_interval_limit)
-        self.interval_unit.currentIndexChanged.connect(self._update_interval_limit)
-        controls.addWidget(self.scan_button)
-        controls.addWidget(self.monitor_button)
-        controls.addSpacing(12)
-        controls.addWidget(QLabel("监测间隔"))
-        controls.addWidget(self.interval_value)
-        controls.addWidget(self.interval_unit)
-        controls.addStretch(1)
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 1)
-        self.progress.setValue(0)
-        self.progress.setTextVisible(False)
-        controls.addWidget(self.progress, 1)
-
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.addWidget(QLabel("搜索范围（选择整个图库或子文件夹）"))
-        self.scope_tree = QTreeWidget()
-        self.scope_tree.setHeaderHidden(True)
-        left_layout.addWidget(self.scope_tree, 2)
-        left_layout.addWidget(QLabel("转换记录（每个文件显示耗时）"))
-        self.conversion_table = QTableWidget(0, 4)
-        self.conversion_table.setHorizontalHeaderLabels(["文件", "状态", "耗时", "说明"])
-        self.conversion_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.conversion_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.conversion_table.setColumnWidth(1, 75)
-        self.conversion_table.setColumnWidth(2, 100)
-        left_layout.addWidget(self.conversion_table, 3)
-
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
-        search_box = QGroupBox("以图搜图")
-        search_layout = QVBoxLayout(search_box)
-        self.query_preview = QLabel("选择或粘贴一张查询图片")
-        self.query_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.query_preview.setMinimumHeight(190)
-        self.query_preview.setStyleSheet("QLabel { background: #f2f4f7; border: 1px dashed #aeb6c2; color: #667085; }")
-        query_buttons = QHBoxLayout()
-        choose_query = QPushButton("上传图片")
-        choose_query.clicked.connect(self.choose_query)
-        paste_query = QPushButton("粘贴图片")
-        paste_query.clicked.connect(self.paste_query)
-        self.crop_button = QPushButton("裁剪")
-        self.crop_button.clicked.connect(self.crop_query)
-        query_buttons.addWidget(choose_query)
-        query_buttons.addWidget(paste_query)
-        query_buttons.addWidget(self.crop_button)
-        query_buttons.addStretch(1)
-        self.threshold = QSpinBox()
-        self.threshold.setRange(1, 100)
-        self.threshold.setValue(20)
-        query_buttons.addWidget(QLabel("相似度门槛"))
-        query_buttons.addWidget(self.threshold)
-        query_buttons.addWidget(QLabel("%"))
-        self.search_button = QPushButton("开始搜索")
-        self.search_button.clicked.connect(self.start_search)
-        query_buttons.addWidget(self.search_button)
-        search_layout.addWidget(self.query_preview)
-        search_layout.addLayout(query_buttons)
-        right_layout.addWidget(search_box)
-
-        self.search_status = QLabel("选择花型库后，先扫描并转换，再开始搜索。")
-        right_layout.addWidget(self.search_status)
-        self.results_table = QTableWidget(0, 4)
-        self.results_table.setHorizontalHeaderLabels(["相似度", "文件名", "页码", "源文件路径"])
-        self.results_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.results_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.results_table.setColumnWidth(0, 85)
-        self.results_table.setColumnWidth(2, 65)
-        self.results_table.cellDoubleClicked.connect(self.open_result)
-        right_layout.addWidget(self.results_table, 1)
-
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(left)
-        splitter.addWidget(right)
-        splitter.setStretchFactor(0, 4)
-        splitter.setStretchFactor(1, 6)
-
-        root_layout.addWidget(folders)
-        root_layout.addLayout(controls)
-        root_layout.addWidget(splitter, 1)
-        self.setCentralWidget(central)
-        self.statusBar().showMessage("就绪")
+    def _set_cat_mode(self, mode: str, message: str):
+        if hasattr(self, "mascot"):
+            self.mascot.set_mode(mode)
+            self.mascot_label.setText(message)
 
     def _refresh_paths(self):
         self.source_edit.setText(str(self.source_root) if self.source_root else "")
         self.output_edit.setText(str(self.output_root) if self.output_root else "")
+
+    def _source_is_dir(self):
+        try:
+            return bool(self.source_root and self.source_root.is_dir())
+        except OSError:
+            return False
 
     def choose_source(self):
         folder = QFileDialog.getExistingDirectory(self, "选择花型库文件夹")
@@ -309,7 +421,7 @@ class MainWindow(QMainWindow):
 
     def _populate_scope(self):
         self.scope_tree.clear()
-        if not self.source_root or not self.source_root.is_dir():
+        if not self._source_is_dir():
             return
         root_item = QTreeWidgetItem([self.source_root.name or str(self.source_root)])
         root_item.setData(0, Qt.ItemDataRole.UserRole, "")
@@ -364,11 +476,12 @@ class MainWindow(QMainWindow):
     def start_scan(self):
         if self.busy:
             return
-        if not self.source_root or not self.source_root.is_dir() or not self.output_root:
+        if not self._source_is_dir() or not self.output_root:
             QMessageBox.information(self, "提示", "请先选择花型库和 JPG 库文件夹。")
             return
         db_path = self._database_path()
         self.conversion_table.setRowCount(0)
+        self._set_cat_mode("convert", "小猫正在整理花型书籍")
         self.search_status.setText("正在扫描花型库并更新 JPG 库…")
         self._start_task(
             lambda report: scan_and_convert(self.source_root, self.output_root, db_path, report),
@@ -376,6 +489,7 @@ class MainWindow(QMainWindow):
         )
 
     def _scan_finished(self, summary: dict):
+        self._set_cat_mode("idle", "小猫整理完啦，继续打盹")
         self._populate_scope()
         self.search_status.setText(
             f"扫描完成：发现 {summary['found']} 个文件，新增或转换 {summary['converted']} 个，"
@@ -404,7 +518,7 @@ class MainWindow(QMainWindow):
             self.monitor_button.setText("开始自动监测")
             self.statusBar().showMessage("自动监测已停止")
         else:
-            if not self.source_root or not self.source_root.is_dir() or not self.output_root:
+            if not self._source_is_dir() or not self.output_root:
                 QMessageBox.information(self, "提示", "请先选择花型库和 JPG 库文件夹。")
                 return
             self.monitor.start(self._interval_ms())
@@ -479,7 +593,8 @@ class MainWindow(QMainWindow):
         query = self._query_bytes()
         db_path = self._database_path()
         threshold = self.threshold.value()
-        self.results_table.setRowCount(0)
+        self.results_view.set_results([], "搜索结果")
+        self._set_cat_mode("search", "小猫正在翻找花型")
         self.search_started = time.monotonic()
         self.search_status.setText("正在搜索…")
         self.search_clock.start(1000)
@@ -509,17 +624,11 @@ class MainWindow(QMainWindow):
 
     def _search_finished(self, results: list[dict]):
         self.search_clock.stop()
-        for result in results:
-            row = self.results_table.rowCount()
-            self.results_table.insertRow(row)
-            source = result["source_path"]
-            name = Path(source).name
-            self.results_table.setItem(row, 0, QTableWidgetItem(f"{result['score']}%"))
-            self.results_table.setItem(row, 1, QTableWidgetItem(name))
-            self.results_table.setItem(row, 2, QTableWidgetItem(str(result["page"]) if result["page"] else "—"))
-            path_item = QTableWidgetItem(source)
-            path_item.setData(Qt.ItemDataRole.UserRole, source)
-            self.results_table.setItem(row, 3, path_item)
+        selected = self.scope_tree.currentItem()
+        scope = selected.data(0, Qt.ItemDataRole.UserRole) if selected else ""
+        root_label = Path(scope).name if scope else (self.source_root.name if self.source_root else "搜索结果")
+        self.results_view.set_results(results, root_label, scope or "")
+        self._set_cat_mode("idle", "小猫找到啦，回书架休息")
         elapsed = format_elapsed(time.monotonic() - self.search_started)
         self.search_status.setText(f"搜索完成，耗时 {elapsed}，找到 {len(results)} 个结果。")
         self.statusBar().showMessage(f"搜图耗时 {elapsed}")
@@ -528,6 +637,7 @@ class MainWindow(QMainWindow):
         self.search_status.setText(f"正在搜索，已耗时 {format_elapsed(time.monotonic() - self.search_started)}")
 
     def _on_failure(self, message: str):
+        self._set_cat_mode("idle", "小猫在书架旁打盹")
         self.search_clock.stop()
         self.search_status.setText("任务失败")
         QMessageBox.warning(self, "任务失败", message)
@@ -540,15 +650,13 @@ class MainWindow(QMainWindow):
             self.worker.deleteLater()
         self.worker = None
 
-    def open_result(self, row: int, column: int):
-        item = self.results_table.item(row, 3)
-        if item:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(item.data(Qt.ItemDataRole.UserRole)))
-
+    def _open_path(self, path: str):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    app.setStyleSheet(WORKBENCH_STYLE)
     window = MainWindow()
-    window.show()
+    window.showMaximized()
     sys.exit(app.exec())

@@ -33,7 +33,10 @@ def format_elapsed(seconds: float) -> str:
 class LibraryDB:
     def __init__(self, path: Path):
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise OSError(f"无法创建图库索引目录：{self.path.parent}\n请检查磁盘是否可用以及目录权限。\n{exc}") from exc
         with self.connect() as db:
             db.executescript(
                 """
@@ -68,7 +71,13 @@ class LibraryDB:
 
     @contextmanager
     def connect(self):
-        db = sqlite3.connect(self.path, timeout=30)
+        try:
+            db = sqlite3.connect(self.path, timeout=30)
+        except sqlite3.Error as exc:
+            raise OSError(
+                f"无法打开图库索引数据库：{self.path}\n"
+                f"请确认 JPG 库所在磁盘已连接且目录可写。\n{exc}"
+            ) from exc
         db.row_factory = sqlite3.Row
         try:
             yield db
@@ -481,6 +490,7 @@ def search_images(
                 results.append(
                     {
                         "source_path": row["source_path"],
+                        "output_path": row["output_path"],
                         "relative_path": row["relative_path"],
                         "page": row["page"],
                         "score": 100,
@@ -512,6 +522,7 @@ def search_images(
                 results.append(
                     {
                         "source_path": row["source_path"],
+                        "output_path": row["output_path"],
                         "relative_path": row["relative_path"],
                         "page": row["page"],
                         "score": score,
