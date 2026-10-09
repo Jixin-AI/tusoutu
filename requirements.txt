@@ -1,0 +1,5 @@
+PySide6==6.11.2
+opencv-python-headless==5.0.0.93
+numpy==2.5.3
+pyvips==3.2.0
+pyvips-binary==8.18.7
