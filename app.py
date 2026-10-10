@@ -37,6 +37,7 @@ QLabel { background: transparent; color: #5a4a3b; }
 QLabel#brand { color: #42362b; font-size: 20pt; font-weight: 700; }
 QLabel#eyebrow { color: #7b5c43; font-size: 9pt; }
 QLabel#statusBadge { color: #385b3f; background: #d8e3c6; border: 2px solid #526b48; padding: 6px 12px; }
+QLabel#mascotIcon { background: #f5e4c6; border: 2px solid #92745a; }
 QGroupBox { background: #fff8ec; border: 2px solid #574638; margin-top: 12px; padding: 12px; }
 QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; color: #684a34; font-weight: 700; background: #f2e5d1; }
 QLineEdit, QSpinBox, QComboBox { color: #3d352c; background: #fffdf6; border: 2px solid #92745a; padding: 6px 8px; selection-background-color: #c85a43; }
@@ -57,6 +58,7 @@ QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QMenu { color: #3d352c; background: #fff8ec; border: 2px solid #574638; }
 QMenu::item:selected { background: #d9e1c7; }
 QToolTip { color: #3d352c; background: #fff8ec; border: 1px solid #92745a; padding: 5px; }
+QDialog#workbenchPopup { color: #3d352c; background: #f2e5d1; border: 4px solid #574638; }
 QStatusBar { color: #6f5d49; background: #eadbc4; border-top: 2px solid #92745a; }
 QTabWidget::pane { border: 2px solid #574638; background: #f8efdf; }
 QTabBar::tab { color: #493a2e; background: #e5d2b4; border: 2px solid #574638; padding: 9px 18px; margin-right: 4px; }
@@ -383,16 +385,22 @@ class MainWindow(QMainWindow):
     def _build_ui(self):
         self.pixel_workbench = PixelWorkbench(self, SearchResultsView)
         self.setCentralWidget(self.pixel_workbench.build())
+        self._refresh_paths()
         self.statusBar().showMessage("就绪 · 书架已准备好")
 
     def _set_cat_mode(self, mode: str, message: str):
         if hasattr(self, "mascot"):
             self.mascot.set_mode(mode)
-            self.mascot_label.setText(message)
+            self.pixel_workbench.set_activity(message)
 
     def _refresh_paths(self):
         self.source_edit.setText(str(self.source_root) if self.source_root else "")
         self.output_edit.setText(str(self.output_root) if self.output_root else "")
+        if hasattr(self, "source_edit_summary"):
+            self.source_edit_summary.setText(str(self.source_root) if self.source_root else "尚未设置")
+            self.output_edit_summary.setText(str(self.output_root) if self.output_root else "尚未设置")
+        if hasattr(self, "pixel_workbench"):
+            self.pixel_workbench.scene.update()
 
     def _source_is_dir(self):
         try:
@@ -480,6 +488,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "请先选择花型库和 JPG 库文件夹。")
             return
         db_path = self._database_path()
+        self.pixel_workbench.convert_dialog.open()
         self.conversion_table.setRowCount(0)
         self._set_cat_mode("convert", "小猫正在整理花型书籍")
         self.search_status.setText("正在扫描花型库并更新 JPG 库…")
@@ -497,6 +506,8 @@ class MainWindow(QMainWindow):
             f"失败 {summary['failed']} 个，未变化 {summary['skipped']} 个。"
         )
         self.statusBar().showMessage("JPG 库已同步")
+        if not self.search_dialog.isVisible() and not self.convert_dialog.isVisible() and not self.settings_dialog.isVisible():
+            self.pixel_workbench.set_activity("花型已整理上架 · 小猫回去打盹啦")
 
     def _update_interval_limit(self, *_):
         if self.interval_unit.currentData() == "days":
@@ -589,6 +600,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "请先扫描并转换花型库。")
             return
         selected = self.scope_tree.currentItem()
+        self.pixel_workbench.search_dialog.open()
         scope = selected.data(0, Qt.ItemDataRole.UserRole) if selected else ""
         query = self._query_bytes()
         db_path = self._database_path()
@@ -632,6 +644,7 @@ class MainWindow(QMainWindow):
         elapsed = format_elapsed(time.monotonic() - self.search_started)
         self.search_status.setText(f"搜索完成，耗时 {elapsed}，找到 {len(results)} 个结果。")
         self.statusBar().showMessage(f"搜图耗时 {elapsed}")
+        self.pixel_workbench.set_activity(f"找到 {len(results)} 个花型 · 小猫回去打盹啦")
 
     def _update_search_clock(self):
         self.search_status.setText(f"正在搜索，已耗时 {format_elapsed(time.monotonic() - self.search_started)}")
@@ -641,6 +654,8 @@ class MainWindow(QMainWindow):
         self.search_clock.stop()
         self.search_status.setText("任务失败")
         QMessageBox.warning(self, "任务失败", message)
+        if not self.pixel_workbench.search_dialog.isVisible() and not self.pixel_workbench.convert_dialog.isVisible() and not self.pixel_workbench.settings_dialog.isVisible():
+            self.pixel_workbench.set_activity("任务失败 · 小猫回去休息")
 
     def _task_finished(self):
         self.busy = False

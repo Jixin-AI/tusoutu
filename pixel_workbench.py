@@ -1,170 +1,268 @@
 from __future__ import annotations
 
 import math
+import time
+from pathlib import Path
 
-from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtCore import QPointF, QRect, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetrics, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QPushButton, QProgressBar, QSpinBox, QSplitter,
     QTableWidget, QTreeWidget, QVBoxLayout, QWidget,
 )
 
+PIXEL_LETTERS = {
+    "A": ("01110", "10001", "10001", "11111", "10001"),
+    "D": ("11110", "10001", "10001", "10001", "11110"),
+    "E": ("11111", "10000", "11110", "10000", "11111"),
+    "N": ("10001", "11001", "10101", "10011", "10001"),
+    "S": ("01111", "10000", "01110", "00001", "11110"),
+    "T": ("11111", "00100", "00100", "00100", "00100"),
+    "W": ("10001", "10001", "10101", "10101", "01010"),
+}
+
+
+class SceneDimmer(QWidget):
+    def paintEvent(self, event):
+        QPainter(self).fillRect(self.rect(), QColor(24, 22, 20, 150))
+
+    def mousePressEvent(self, event):
+        event.accept()
+
+
+class ScenePanel(QDialog):
+    def __init__(self, scene, title, size):
+        super().__init__(scene, Qt.WindowType.Widget)
+        self.setWindowFlags(Qt.WindowType.Widget)
+        self.scene = scene
+        self.base_size = size
+        self.setObjectName("workbenchPopup")
+        self.setWindowTitle(title)
+        self.setModal(False)
+        self.finished.connect(scene.dimmer.hide)
+
+    def open(self):
+        self.place()
+        self.scene.dimmer.setGeometry(self.scene.rect())
+        self.scene.dimmer.show()
+        self.scene.dimmer.raise_()
+        self.show()
+        self.raise_()
+
+    def place(self):
+        width = min(self.base_size[0], max(1, self.scene.width() - 64))
+        height = min(self.base_size[1], max(1, self.scene.height() - 64))
+        self.resize(width, height)
+        self.move((self.scene.width() - width) // 2, (self.scene.height() - height) // 2)
+
 
 class PixelBookshop(QWidget):
+    """Reference-led pixel library scene with task-driven foreground cat."""
     action = Signal(str)
     mode_changed = Signal(str)
 
-    PALETTE = {
-        "sky": "#f8dfcb", "wall": "#456848", "wall2": "#354f3c",
-        "wood": "#a85a3e", "wood2": "#704538", "cream": "#ffedcf",
-        "paper": "#f2cd91", "red": "#c95143", "green": "#819463",
-        "dark": "#49382e", "glass": "#b7d5c9", "blue": "#6f8990",
-    }
-
     def __init__(self, parent=None):
         super().__init__(parent)
+        assets = Path(__file__).resolve().parent / "assets"
+        font_path=Path("C:/Windows/Fonts/msyh.ttc")
+        if font_path.exists(): QFontDatabase.addApplicationFont(str(font_path))
+        self.background = QPixmap(str(assets / "bookshop-urban.png"))
+        self.tree_canopies = (
+            (QPixmap(str(assets / "tree-canopy-left.png")), QRectF(0, 0, 590, 420), 0.2),
+            (QPixmap(str(assets / "tree-canopy-middle.png")), QRectF(520, 165, 780, 90), 2.1),
+            (QPixmap(str(assets / "tree-canopy-right.png")), QRectF(1260, 125, 250, 330), 4.0),
+        )
+        self.objects = {
+            "settings": QPixmap(str(assets / "postbox-interactive.png")),
+            "search": QPixmap(str(assets / "counter-books-interactive.png")),
+            "convert": QPixmap(str(assets / "pattern-rack-interactive.png")),
+        }
+        self.object_images = {key: sprite.toImage() for key, sprite in self.objects.items()}
+        self.hover_outlines = {}
+        self.cats = {mode: QPixmap(str(assets / f"cat-glasses-{mode}.png")) for mode in ("idle", "search", "convert")}
+        self.animations = {}
+        for name, count in (("search", 48),):
+            sheet = QPixmap(str(assets / "cat-glasses-search-motion.png"))
+            self.animations[name] = [sheet.copy((index % 8) * 256, (index // 8) * 256, 256, 256) for index in range(count)] if not sheet.isNull() else []
         self.mode = "idle"
+        self.mode_started = time.monotonic()
+        self.activity = "小猫在书架旁打盹"
         self.frame = 0
-        self.cat_x = 0.5
+        self.cat_x = .525
         self.hover = ""
         self.hotspots = {}
+        self.panels = []
+        self.dimmer = SceneDimmer(self)
+        self.dimmer.hide()
         self.setMinimumSize(760, 520)
         self.setMouseTracking(True)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
-        self.timer.start(180)
+        self.timer.start(125)
 
-    def set_mode(self, mode: str):
+    def set_mode(self, mode):
         self.mode = mode
+        self.mode_started = time.monotonic()
         self.mode_changed.emit(mode)
         self.update()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        for panel in self.panels:
+            if panel.isVisible():
+                panel.place()
+        if self.dimmer.isVisible():
+            self.dimmer.setGeometry(self.rect())
+            self.dimmer.raise_()
+            for panel in self.panels:
+                if panel.isVisible():
+                    panel.raise_()
+
     def _tick(self):
-        self.frame = (self.frame + 1) % 8
-        if self.mode == "search":
-            self.cat_x += 0.035
-            if self.cat_x > 0.78:
-                self.cat_x = 0.39
-        elif self.mode == "convert":
-            self.cat_x += 0.025
-            if self.cat_x > 0.68:
-                self.cat_x = 0.39
-        else:
-            self.cat_x = 0.5
+        self.frame = (self.frame + 1) % 48
+        self.cat_x = .525
         self.update()
 
-    def _rect(self, x, y, width, height):
-        return QRect(round(x*self.width()), round(y*self.height()), round(width*self.width()), round(height*self.height()))
+    def _label(self,p,rect,text,size,color,bold=False):
+        p.setPen(QColor(color)); font=QFont("Microsoft YaHei UI",size); font.setBold(bold); p.setFont(font)
+        p.drawText(rect,Qt.AlignmentFlag.AlignCenter,text)
 
-    def _block(self, p, x, y, width, height, color):
-        p.fillRect(self._rect(x, y, width, height), QColor(color))
+    def paintEvent(self,event):
+        p=QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing,False)
+        p.fillRect(self.rect(),QColor("#171b18"))
+        if self.background.isNull():
+            self._label(p,self.rect(),"找不到 assets/bookshop-urban.png",16,"#fff0d2",True); return
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform,True)
+        w,h=self.width(),self.height(); iw,ih=self.background.width(),self.background.height()
+        dw,dh=w,h; ox=oy=0
+        p.fillRect(self.rect(),QColor("#607f54"))
+        if oy:
+            p.fillRect(QRectF(0,0,w,oy),QColor("#b7a8a0"))
+            p.fillRect(QRectF(0,oy+dh,w,h-oy-dh),QColor("#77895d"))
+        p.drawPixmap(QRectF(ox,oy,dw,dh),self.background,QRectF(self.background.rect()))
+        phase=self.frame*math.tau/48
+        for canopy,source_rect,offset in self.tree_canopies:
+            if canopy.isNull(): continue
+            width,height=source_rect.width()*dw/iw,source_rect.height()*dh/ih
+            x,y=ox+source_rect.x()*dw/iw,oy+source_rect.y()*dh/ih
+            sway=math.sin(phase+offset)
+            p.save(); p.translate(x+width/2+sway*5,y+height/2); p.rotate(sway*.55)
+            p.drawPixmap(QRectF(-width/2,-height/2,width,height),canopy,QRectF(canopy.rect())); p.restore()
+        leaves=((.14,.18,"#d8b94f"),(.25,.25,"#c9a63b"),(.42,.29,"#dfc85c"),(.54,.24,"#c9ae49"),(.69,.27,"#d9bd4a"),(.79,.23,"#d5b74d"),(.91,.32,"#c99b35"),(.34,.16,"#d7c15a"),(.61,.18,"#d1b64c"),(.86,.19,"#ddb846"))
+        for i,(sx,sy,color) in enumerate(leaves):
+            progress=((self.frame+i*7)%48)/48
+            x=ox+(sx+math.sin(phase*1.15+i*1.7)*.018+progress*.045)*dw
+            y=oy+(sy+progress*.55)*dh
+            scale=max(4,dh*(.014+(i%3)*.002))
+            p.save(); p.translate(x,y); p.rotate(math.sin(phase*1.5+i)*42); p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(color))
+            leaf=QPolygonF([QPointF(0,-scale*.58),QPointF(scale*.25,-scale*.28),QPointF(scale*.58,-scale*.38),QPointF(scale*.46,-scale*.08),QPointF(scale*.68,scale*.12),QPointF(scale*.30,scale*.22),QPointF(scale*.20,scale*.58),QPointF(0,scale*.31),QPointF(-scale*.20,scale*.58),QPointF(-scale*.26,scale*.23),QPointF(-scale*.62,scale*.12),QPointF(-scale*.40,-scale*.12),QPointF(-scale*.48,-scale*.40),QPointF(-scale*.16,-scale*.28)])
+            p.drawPolygon(leaf); p.setPen(QPen(QColor("#8f7133"),max(1,scale*.09))); p.drawLine(QPointF(0,scale*.06),QPointF(0,scale*.74)); p.restore()
+        sign="NEWSSTAND"; sign_width=dw*.31; cell=min(sign_width/(len(sign)*6-1),dh*.043/5)
+        left=ox+dw*.55-(len(sign)*6*cell-cell)/2; top=oy+.337*dh
+        for letter_index,letter in enumerate(sign):
+            for row,bits in enumerate(PIXEL_LETTERS[letter]):
+                for column,bit in enumerate(bits):
+                    if bit=="1":
+                        rect=QRectF(left+(letter_index*6+column)*cell,top+row*cell,cell-1,cell-1)
+                        p.fillRect(rect.translated(2,2),QColor("#973d32"))
+                        p.fillRect(rect,QColor("#fff5dc"))
+        object_layout={"settings":(.327,.82,.19),"search":(.525,.82,.145),"convert":(.77,.82,.23)}
+        placements={}
+        self.hotspots={}
+        for key,(cx,bottom,height) in object_layout.items():
+            sprite=self.objects[key]
+            sprite_height=dh*height; sprite_width=sprite_height*sprite.width()/sprite.height()
+            rect=QRectF(ox+cx*dw-sprite_width/2,oy+bottom*dh-sprite_height,sprite_width,sprite_height)
+            placements[key]=rect
+            self.hotspots[key]=rect.toRect()
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(28,32,25,115))
+            p.drawEllipse(QRectF(rect.center().x()-rect.width()*.38,oy+bottom*dh-4,rect.width()*.76,8))
+        p.drawPixmap(placements["settings"],self.objects["settings"],QRectF(self.objects["settings"].rect()))
+        p.drawPixmap(placements["convert"],self.objects["convert"],QRectF(self.objects["convert"].rect()))
+        plaque=QRectF(placements["settings"].left()+placements["settings"].width()*.35,placements["settings"].top()+placements["settings"].height()*.35,placements["settings"].width()*.30,placements["settings"].height()*.09)
+        p.fillRect(plaque,QColor("#fff0cc")); p.setPen(QPen(QColor("#6f1f1d"),1)); p.drawRect(plaque.adjusted(0,0,-1,-1))
+        font=QFont("Microsoft YaHei UI"); font.setBold(True); font.setStretch(80)
+        for size in range(max(5,round(plaque.height())),3,-1):
+            font.setPixelSize(size)
+            if QFontMetrics(font).horizontalAdvance("中国邮政")<=plaque.width()-2: break
+        p.setPen(QColor("#6f1f1d")); p.setFont(font); p.drawText(plaque.adjusted(1,0,-1,0),Qt.AlignmentFlag.AlignCenter,"中国邮政")
+        counter=placements["search"]
+        counter_surface=counter.top()+counter.height()*.10
+        if self.mode=="idle": p.drawPixmap(counter,self.objects["search"],QRectF(self.objects["search"].rect()))
+        cat = self.cats.get(self.mode, self.cats["idle"])
+        animation = self.animations.get(self.mode, [])
+        if animation:
+            fps = 5
+            cat = animation[int((time.monotonic() - self.mode_started) * fps) % len(animation)]
+        if not cat.isNull():
+            cat_height = round(dh * ({"idle":.10,"search":.13,"convert":.12}[self.mode]))
+            cat_width = round(cat.width() * cat_height / cat.height())
+            bob = math.sin(self.frame * math.tau / 8) if self.mode == "idle" else 0
+            cat_bottom=counter_surface+cat_height*.028
+            target = QRectF(ox+self.cat_x*dw-cat_width/2, cat_bottom-cat_height+bob, cat_width, cat_height)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            p.drawPixmap(target, cat, QRectF(cat.rect()))
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+            if self.mode=="idle":
+                p.setPen(QColor("#fff3db")); p.setFont(QFont("Microsoft YaHei UI", max(10, round(dh*.018)), QFont.Weight.Bold))
+                p.drawText(QPointF(target.left()+cat_width*.58,target.top()-4),"Z")
+                p.setFont(QFont("Microsoft YaHei UI", max(8, round(dh*.013)), QFont.Weight.Bold))
+                p.drawText(QPointF(target.left()+cat_width*.72,target.top()-cat_height*.08),"z")
+                bubble_phase=(self.frame%32)/32
+                if bubble_phase<.9:
+                    radius=max(5,cat_height*(.045+bubble_phase*.04))
+                    bubble_x=target.left()+cat_width*.48
+                    bubble_y=target.top()+cat_height*(.78-bubble_phase*.16)
+                    p.setPen(QPen(QColor(202,244,247,235),1)); p.setBrush(QColor(210,246,246,105))
+                    p.drawEllipse(QPointF(bubble_x,bubble_y),radius,radius)
+                    p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(255,255,240,190))
+                    p.drawEllipse(QPointF(bubble_x-radius*.28,bubble_y-radius*.32),max(1,radius*.17),max(1,radius*.17))
+        if self.mode!="idle":
+            p.drawPixmap(counter,self.objects["search"],QRectF(self.objects["search"].rect()))
+        activity_rect=QRectF(dw*.40,dh*.022,dw*.20,dh*.043)
+        p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(23,45,41,220)); p.drawRoundedRect(activity_rect,5,5)
+        self._label(p,activity_rect,self.activity,max(9,round(dh*.015)),"#fff1d0",True)
+        if self.hover in self.hotspots:
+            r=self.hotspots[self.hover]
+            outline=self._hover_outline(self.hover,r.size())
+            p.drawPixmap(r.left()-2,r.top()-2,outline)
+            text={"settings":"设置 · 点击打开书店设置","search":"图搜图 · 点击上传花型素材","convert":"点击开始转换花型库"}[self.hover]
+            bubble=QRect(r.center().x()-132,r.top()-36,264,30)
+            p.fillRect(bubble,QColor(37,30,25,225)); self._label(p,bubble,text,12,"#fff0d2",True)
 
-    def _label(self, p, rect, text, size, color, bold=False):
-        p.setPen(QColor(color))
-        font = QFont("Microsoft YaHei UI", size)
-        if not font.exactMatch():
-            font = QFont("SimHei", size)
-        font.setBold(bold)
-        p.setFont(font)
-        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+    def _hover_outline(self,key,size):
+        cache_key=(key,size.width(),size.height())
+        if cache_key not in self.hover_outlines:
+            sprite=self.objects[key].scaled(size,Qt.AspectRatioMode.IgnoreAspectRatio,Qt.TransformationMode.SmoothTransformation)
+            silhouette=QImage(sprite.size(),QImage.Format.Format_ARGB32_Premultiplied); silhouette.fill(Qt.GlobalColor.transparent)
+            painter=QPainter(silhouette); painter.drawPixmap(0,0,sprite); painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn); painter.fillRect(silhouette.rect(),QColor("#ffe3a0")); painter.end()
+            outline=QImage(sprite.width()+4,sprite.height()+4,QImage.Format.Format_ARGB32_Premultiplied); outline.fill(Qt.GlobalColor.transparent)
+            painter=QPainter(outline)
+            for dx,dy in ((-2,0),(2,0),(0,-2),(0,2),(-1,-1),(1,-1),(-1,1),(1,1)):
+                painter.drawImage(2+dx,2+dy,silhouette)
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationOut); painter.drawImage(2,2,silhouette); painter.end()
+            self.hover_outlines[cache_key]=QPixmap.fromImage(outline)
+        return self.hover_outlines[cache_key]
 
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-        p.fillRect(self.rect(), QColor(self.PALETTE["sky"]))
-        u = max(2, min(self.width()/120, self.height()/82))
-        def b(x,y,w,h,c): p.fillRect(QRect(round(x*u),round(y*u),round(w*u),round(h*u)),QColor(c))
-        # Isometric kiosk silhouette and green back wall.
-        b(9,13,104,57,self.PALETTE["wall2"]); b(11,11,102,57,self.PALETTE["wall"])
-        b(12,12,100,3,self.PALETTE["green"]); b(10,66,106,4,self.PALETTE["wood2"])
-        # Pixel shelves and colorful book spines.
-        for sy in (24,39,54):
-            b(16,sy,62,2,self.PALETTE["wood2"]); b(16,sy-1,62,1,self.PALETTE["paper"])
-        books=[("#c95143",4),("#e1b66f",5),("#6f8990",4),("#bd7765",6),("#d6c49c",4),("#718456",5)]
-        for row,sy in enumerate((17,26,32,41,47,56)):
-            x=18
-            while x < 75:
-                c,h=books[(x+row*3)%len(books)]
-                b(x,sy,3,h,c); b(x,sy,1,1,self.PALETTE["cream"]); x+=5
-        # framed print and bunting.
-        b(84,18,19,25,self.PALETTE["wood2"]); b(86,20,15,21,self.PALETTE["paper"])
-        b(88,22,11,15,self.PALETTE["blue"]); b(90,29,7,2,self.PALETTE["cream"])
-        for x in (82,92,102):
-            b(x,47,1,5,self.PALETTE["paper"]); b(x-1,51,3,3,self.PALETTE["cream"])
-        # newsstand sign.
-        b(77,29,39,11,self.PALETTE["wood2"]); b(78,30,37,8,self.PALETTE["red"])
-        self._label(p,self._rect(.65,.35,.32,.085),"花 型 书 报 亭",max(10,round(u*2.4)),self.PALETTE["cream"],True)
-        # floor tiles.
-        b(5,69,110,3,self.PALETTE["green"])
-        for x in range(7,116,10):
-            b(x,72,9,6,self.PALETTE["paper"] if x%3 else self.PALETTE["red"])
-            b(x,72,9,1,self.PALETTE["wood2"]); b(x,77,9,1,self.PALETTE["wood2"])
-        # mail post.
-        b(9,45,10,25,self.PALETTE["red"]); b(8,43,12,3,self.PALETTE["wood2"])
-        b(7,41,14,4,self.PALETTE["red"]); b(8,48,12,2,"#dc7560"); b(10,52,8,2,self.PALETTE["wood2"])
-        b(10,58,8,2,self.PALETTE["wood2"])
-        # counter and front display rack.
-        b(37,61,47,3,self.PALETTE["wood2"]); b(39,64,42,8,self.PALETTE["red"])
-        b(40,63,40,2,self.PALETTE["paper"]); b(42,65,35,1,"#e88768")
-        b(40,72,40,1,self.PALETTE["wood2"])
-        b(86,56,25,2,self.PALETTE["wood2"]); b(88,58,22,2,self.PALETTE["paper"])
-        for i in range(3):
-            x=89+i*7
-            b(x,53-i%2,4,4,["#8c9d70","#9b786b","#718995"][i]); b(x+1,54-i%2,1,2,self.PALETTE["cream"])
-        # query-photo stand at counter.
-        b(43,55,27,2,self.PALETTE["wood2"]); b(45,52,23,3,self.PALETTE["glass"])
-        b(47,53,7,1,self.PALETTE["cream"]); b(57,53,8,1,self.PALETTE["blue"])
-        # pixel cat: idle snooze, search rummage, conversion stack books.
-        cx=round(self.cat_x*120); bob=(self.frame//2)%2
-        cat_scale=max(1,round(u/2))
-        p.save()
-        p.translate(round(cx*u), round(58*u))
-        p.scale(cat_scale,cat_scale)
-        p.translate(-cx,-58)
-        b(cx-5,60,13,6,"#9b6d4d"); b(cx-3,58-bob,11,8,self.PALETTE["cream"])
-        b(cx-3,56-bob,3,3,self.PALETTE["dark"]); b(cx+5,56-bob,3,3,self.PALETTE["dark"])
-        b(cx-2,57-bob,2,2,"#bd8870"); b(cx+6,57-bob,2,2,"#bd8870")
-        b(cx,61-bob,1,1,self.PALETTE["dark"]); b(cx+4,61-bob,1,1,self.PALETTE["dark"])
-        b(cx+2,63-bob,2,1,self.PALETTE["red"])
-        if self.mode == "idle":
-            b(cx+8,52-bob,2,1,self.PALETTE["dark"]); b(cx+11,50-bob,2,1,self.PALETTE["dark"])
-            self._label(p,self._rect(.39,.49,.12,.04),"z  z  z",max(9,round(u*2.2)),self.PALETTE["dark"])
-        elif self.mode == "search":
-            b(cx+10,62,4,1,self.PALETTE["paper"]); b(cx+13,61,1,2,self.PALETTE["paper"])
-            if self.frame%2: b(cx+18,58,4,3,self.PALETTE["red"])
-            self._label(p,self._rect(.47,.48,.22,.04),"翻！翻！找花型…",max(8,round(u*1.8)),self.PALETTE["dark"])
-        else:
-            b(cx+11,59-(self.frame%2),4,2,self.PALETTE["red"]); b(cx+12,59-(self.frame%2),1,2,self.PALETTE["paper"])
-            b(cx+17,60,4,2,self.PALETTE["green"]); b(cx+18,60,1,2,self.PALETTE["cream"])
-            self._label(p,self._rect(.47,.48,.22,.04),"正在把花型上架…",max(8,round(u*1.8)),self.PALETTE["dark"])
-        p.restore()
-        # Clickable arcade-style signboards across the front.
-        self.hotspots={
-            "search":self._rect(.04,.82,.28,.13),
-            "library":self._rect(.36,.82,.28,.13),
-            "convert":self._rect(.68,.82,.28,.13),
-        }
-        cards=[("search","① 图搜图","上传客户花型"),("library","② 花型目录","选择整库 / 子文件夹"),("convert","③ JPG 上架","转换与自动监测")]
-        for key,title,sub in cards:
-            r=self.hotspots[key]
-            p.fillRect(r,QColor("#fff0d5" if key != self.hover else "#f9dda5"))
-            p.setPen(QPen(QColor(self.PALETTE["wood2"]),max(2,round(u*.55))))
-            p.drawRect(r.adjusted(1,1,-2,-2))
-            self._label(p,QRect(r.left(),r.top()+3,r.width(),round(r.height()*.45)),title,max(9,round(u*1.55)),self.PALETTE["dark"],True)
-            self._label(p,QRect(r.left()+3,r.top()+round(r.height()*.48),r.width()-6,round(r.height()*.38)),sub,max(7,round(u*1.05)),self.PALETTE["wood2"])
-        p.end()
+    def _item_at(self,point):
+        for key,rect in self.hotspots.items():
+            if rect.contains(point):
+                image=self.object_images[key]
+                x=min(image.width()-1,int((point.x()-rect.x())*image.width()/rect.width()))
+                y=min(image.height()-1,int((point.y()-rect.y())*image.height()/rect.height()))
+                if image.pixelColor(x,y).alpha()>16: return key
+        return ""
 
     def mouseMoveEvent(self,event):
-        self.hover=next((key for key,r in self.hotspots.items() if r.contains(event.position().toPoint())),"")
+        self.hover=self._item_at(event.position().toPoint())
         self.setCursor(Qt.CursorShape.PointingHandCursor if self.hover else Qt.CursorShape.ArrowCursor)
         self.update()
 
     def mousePressEvent(self,event):
         if event.button()==Qt.MouseButton.LeftButton:
-            for key,r in self.hotspots.items():
-                if r.contains(event.position().toPoint()):
-                    self.action.emit(key); return
+            key=self._item_at(event.position().toPoint())
+            if key: self.action.emit(key)
 
 
 class PixelWorkbench:
@@ -173,37 +271,47 @@ class PixelWorkbench:
         self.results_view_type=results_view_type
 
     def build(self):
-        from PySide6.QtWidgets import QStackedWidget
         w=self.w
-        self.root=QStackedWidget()
         self.scene=PixelBookshop()
         self.scene.action.connect(self._open_feature)
-        self.scene.mode_changed.connect(lambda mode:w.mascot_label.setText({"idle":"小猫在书架旁打盹","search":"小猫正在翻箱倒柜找花型","convert":"小猫正在忙碌上架花型"}.get(mode,"小猫在工作")))
+        self.scene.mode_changed.connect(lambda mode:self.set_activity({"idle":"小猫在书架旁打盹","search":"小猫正在翻箱倒柜找花型","convert":"小猫正在忙碌整理、上架花型书籍"}.get(mode,"小猫在工作")))
+        self._build_settings_page()
         self._build_search_page()
         self._build_convert_page()
-        self.root.addWidget(self.scene)
-        self.root.addWidget(self.search_page)
-        self.root.addWidget(self.convert_page)
         w.mascot=self.scene
         w.mascot_label=QLabel("小猫在书架旁打盹")
-        w.tabs=self.root
-        return self.root
+        return self.scene
 
-    def _back_button(self):
-        button=QPushButton("← 回到书报亭")
-        button.clicked.connect(lambda:self.root.setCurrentWidget(self.scene))
-        return button
+    def set_activity(self,text):
+        self.scene.activity=text
+        self.w.mascot_label.setText(text)
+        self.scene.update()
 
-    def _page(self,title,subtitle):
-        page=QWidget(); layout=QVBoxLayout(page); layout.setContentsMargins(20,16,20,16)
-        top=QHBoxLayout(); titles=QVBoxLayout(); heading=QLabel(title); heading.setObjectName("brand")
-        hint=QLabel(subtitle); hint.setObjectName("eyebrow"); titles.addWidget(heading); titles.addWidget(hint)
-        top.addLayout(titles); top.addStretch(1); top.addWidget(self._back_button()); layout.addLayout(top)
-        return page,layout
+    def _dialog(self,title,size):
+        dialog=ScenePanel(self.scene,title,size); dialog.resize(*size)
+        self.scene.panels.append(dialog)
+        layout=QVBoxLayout(dialog); layout.setContentsMargins(14,12,14,12)
+        return dialog,layout
+
+    def _panel_header(self,dialog,layout,title,subtitle):
+        row=QHBoxLayout(); stack=QVBoxLayout(); heading=QLabel(title); heading.setObjectName("brand")
+        hint=QLabel(subtitle); hint.setObjectName("eyebrow"); stack.addWidget(heading); stack.addWidget(hint)
+        mascot=QLabel(); mascot.setObjectName("mascotIcon"); mascot.setFixedSize(58,58)
+        self._paint_mascot_icon(mascot,self.scene.mode)
+        self.scene.mode_changed.connect(lambda mode, icon=mascot:self._paint_mascot_icon(icon,mode))
+        row.addWidget(mascot); row.addLayout(stack); row.addStretch(1); close=QPushButton("返回书店"); close.clicked.connect(dialog.close); row.addWidget(close)
+        layout.addLayout(row)
+
+    def _paint_mascot_icon(self,label,mode):
+        icon=self.scene.animations[mode][0] if mode in self.scene.animations and self.scene.animations[mode] else self.scene.cats.get(mode,self.scene.cats["idle"])
+        pixmap=icon.scaled(32,32,Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation)
+        label.setPixmap(pixmap)
 
     def _build_search_page(self):
         w=self.w
-        page,layout=self._page("图搜图 · 找花型","把客户照片或局部花型交给小猫，去书架里找相似款")
+        self.search_dialog,layout=self._dialog("图搜图 · 花型书店",(1050,760))
+        self.active_dialog=self.search_dialog
+        self._panel_header(self.search_dialog,layout,"图搜图 · 找花型","把客户照片或局部花型交给小猫，去书架里找相似款")
         query_box=QGroupBox("客户提供的花型")
         query_layout=QVBoxLayout(query_box)
         w.query_preview=QLabel("上传或粘贴一张客户图片")
@@ -214,8 +322,9 @@ class PixelWorkbench:
         for title,callback in (("上传图片",w.choose_query),("粘贴图片",w.paste_query),("裁剪局部",w.crop_query)):
             button=QPushButton(title); button.clicked.connect(callback); buttons.addWidget(button)
             if title=="裁剪局部": w.crop_button=button
-        buttons.addSpacing(12); buttons.addWidget(QLabel("相似度")); w.threshold=QSpinBox(); w.threshold.setRange(1,100); w.threshold.setValue(20)
-        buttons.addWidget(w.threshold); buttons.addWidget(QLabel("%")); buttons.addStretch(1)
+        buttons.addSpacing(12); buttons.addWidget(QLabel("相似度")); w.similarity_label=QLabel(); buttons.addWidget(w.similarity_label); buttons.addStretch(1)
+        w.threshold.valueChanged.connect(lambda value:w.similarity_label.setText(f"{value}%"))
+        w.similarity_label.setText(f"{w.threshold.value()}%")
         w.search_button=QPushButton("小猫，开始找花型"); w.search_button.clicked.connect(w.start_search); buttons.addWidget(w.search_button)
         query_layout.addLayout(buttons); layout.addWidget(query_box)
         split=QSplitter(Qt.Orientation.Horizontal)
@@ -227,35 +336,75 @@ class PixelWorkbench:
         results_layout.addWidget(w.search_status); w.results_view=self.results_view_type(); w.results_view.setMinimumHeight(210)
         w.results_view.open_requested.connect(w._open_path); results_layout.addWidget(w.results_view,1)
         split.addWidget(results_box); split.setStretchFactor(0,1); split.setStretchFactor(1,4); layout.addWidget(split,1)
-        self.search_page=page
+        self.search_dialog.finished.connect(lambda *_:self._return_idle())
 
     def _build_convert_page(self):
         w=self.w
-        page,layout=self._page("花型库 · JPG 上架","选择原花型库和 JPG 书架，支持手动扫描与定时监测")
+        self.convert_dialog,layout=self._dialog("花型库 · 整理上架",(900,650))
+        self.active_dialog=self.convert_dialog
+        self._panel_header(self.convert_dialog,layout,"花型库 · JPG 上架","小猫会扫描花型库，将新花型整理成 JPG 放上书架")
         folders=QGroupBox("书报亭的两个仓库")
         form=QFormLayout(folders)
-        for title,attribute,button_text,callback in (("原花型库","source_edit","选择花型库",w.choose_source),("JPG 书架","output_edit","选择 JPG 库",w.choose_output)):
-            row=QHBoxLayout(); edit=QLineEdit(); edit.setReadOnly(True); setattr(w,attribute,edit)
-            button=QPushButton(button_text); button.clicked.connect(callback); row.addWidget(edit,1); row.addWidget(button); form.addRow(title,row)
+        for title,attribute in (("原花型库","source_edit"),("JPG 书架","output_edit")):
+            row=QHBoxLayout(); summary=QLabel("尚未设置"); summary.setWordWrap(True); setattr(w,attribute+"_summary",summary)
+            button=QPushButton("在设置中修改"); button.clicked.connect(self.open_settings); row.addWidget(summary,1); row.addWidget(button); form.addRow(title,row)
         layout.addWidget(folders)
         actions=QGroupBox("整理并上架")
         action_layout=QVBoxLayout(actions); controls=QHBoxLayout(); w.scan_button=QPushButton("立即扫描并转换"); w.scan_button.clicked.connect(w.start_scan)
         w.monitor_button=QPushButton("开始自动监测"); w.monitor_button.clicked.connect(w.toggle_monitor)
-        controls.addWidget(w.scan_button); controls.addWidget(w.monitor_button); controls.addSpacing(12); controls.addWidget(QLabel("监测间隔"))
-        w.interval_value=QSpinBox(); w.interval_value.setRange(1,168); w.interval_value.setValue(1)
-        w.interval_unit=QComboBox(); w.interval_unit.addItem("小时","hours"); w.interval_unit.addItem("天","days")
-        w.interval_value.valueChanged.connect(w._update_interval_limit); w.interval_unit.currentIndexChanged.connect(w._update_interval_limit)
-        controls.addWidget(w.interval_value); controls.addWidget(w.interval_unit); controls.addStretch(1); action_layout.addLayout(controls)
+        controls.addWidget(w.scan_button); controls.addWidget(w.monitor_button); controls.addSpacing(12); controls.addWidget(QLabel("监测间隔请在设置中调整"))
+        controls.addStretch(1); action_layout.addLayout(controls)
         w.progress=QProgressBar(); w.progress.setRange(0,1); w.progress.setValue(0); action_layout.addWidget(w.progress)
         w.conversion_table=QTableWidget(0,4); w.conversion_table.setHorizontalHeaderLabels(["花型文件","状态","耗时","说明"])
         w.conversion_table.horizontalHeader().setSectionResizeMode(0,QHeaderView.ResizeMode.Stretch)
         w.conversion_table.horizontalHeader().setSectionResizeMode(3,QHeaderView.ResizeMode.Stretch)
         w.conversion_table.setColumnWidth(1,105); w.conversion_table.setColumnWidth(2,100); action_layout.addWidget(w.conversion_table,1)
-        layout.addWidget(actions,1); self.convert_page=page
+        layout.addWidget(actions,1); self.convert_dialog.finished.connect(lambda *_:self._return_idle())
+
+    def _build_settings_page(self):
+        self.settings_dialog,layout=self._dialog("书店设置",(620,360))
+        self.active_dialog=self.settings_dialog
+        self._panel_header(self.settings_dialog,layout,"书店设置","配置书库位置与搜图默认参数")
+        paths=QGroupBox("书库位置")
+        form=QFormLayout(paths)
+        for title,attribute,button_text,callback in (("原花型库","source_edit","选择花型库",self.w.choose_source),("JPG 书架","output_edit","选择 JPG 库",self.w.choose_output)):
+            row=QHBoxLayout(); edit=QLineEdit(); edit.setReadOnly(True); setattr(self.w,attribute,edit)
+            button=QPushButton(button_text); button.clicked.connect(callback); row.addWidget(edit,1); row.addWidget(button); form.addRow(title,row)
+        layout.addWidget(paths)
+        controls=QGroupBox("默认参数")
+        row=QHBoxLayout(controls); row.addWidget(QLabel("默认相似度")); self.w.threshold=QSpinBox(); self.w.threshold.setRange(1,100); self.w.threshold.setValue(int(self.w.settings.value("similarity",20)))
+        row.addWidget(self.w.threshold); row.addWidget(QLabel("%")); row.addSpacing(18); row.addWidget(QLabel("监测间隔"))
+        self.w.interval_value=QSpinBox(); self.w.interval_value.setRange(1,168); self.w.interval_value.setValue(int(self.w.settings.value("monitor_interval",1)))
+        self.w.interval_unit=QComboBox(); self.w.interval_unit.addItem("小时","hours"); self.w.interval_unit.addItem("天","days")
+        self.w.interval_unit.setCurrentIndex(max(0,self.w.interval_unit.findData(self.w.settings.value("monitor_unit","hours"))))
+        self.w.interval_value.valueChanged.connect(self.w._update_interval_limit); self.w.interval_unit.currentIndexChanged.connect(self.w._update_interval_limit)
+        self.w.threshold.valueChanged.connect(lambda value:self.w.settings.setValue("similarity",value))
+        self.w.interval_value.valueChanged.connect(lambda value:self.w.settings.setValue("monitor_interval",value))
+        self.w.interval_unit.currentIndexChanged.connect(lambda _:self.w.settings.setValue("monitor_unit",self.w.interval_unit.currentData()))
+        self.w._update_interval_limit()
+        row.addWidget(self.w.interval_value); row.addWidget(self.w.interval_unit); row.addStretch(1); layout.addWidget(controls)
+        self.settings_dialog.finished.connect(lambda *_:self._return_idle())
+
+    def open_settings(self):
+        self.active_dialog=self.settings_dialog
+        self.settings_dialog.open()
+
+    def _return_idle(self):
+        if not self.w.busy:
+            self.w._set_cat_mode("idle","小猫在书架旁打盹")
 
     def _open_feature(self,key):
-        if key=="search": self.root.setCurrentWidget(self.search_page)
-        elif key=="convert": self.root.setCurrentWidget(self.convert_page)
-        else:
-            self.root.setCurrentWidget(self.search_page)
+        for dialog in (self.search_dialog,self.convert_dialog,self.settings_dialog):
+            if dialog.isVisible():
+                dialog.close()
+        if key=="search":
+            self.active_dialog=self.search_dialog; self.search_dialog.open()
+            if self.w.query_image.isNull():
+                QTimer.singleShot(0,self.w.choose_query)
+        elif key=="convert":
+            self.w.start_scan()
+        elif key=="library":
+            self.active_dialog=self.search_dialog; self.search_dialog.open()
             if self.w.scope_tree.topLevelItemCount(): self.w.scope_tree.setCurrentItem(self.w.scope_tree.topLevelItem(0))
+        elif key=="settings":
+            self.open_settings()
