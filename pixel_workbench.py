@@ -271,7 +271,7 @@ class PixelWorkbench:
         self.scene.update()
 
     def _dialog(self,title,size):
-        dialog=ScenePanel(self.scene,title,size); dialog.resize(*size)
+        dialog=ScenePanel(self.scene,title,size); dialog.resize(*size); dialog.hide()
         self.scene.panels.append(dialog)
         layout=QVBoxLayout(dialog); layout.setContentsMargins(14,12,14,12)
         return dialog,layout
