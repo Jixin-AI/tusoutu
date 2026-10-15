@@ -490,7 +490,7 @@ class MainWindow(QMainWindow):
         db_path = self._database_path()
         self.pixel_workbench.convert_dialog.open()
         self.conversion_table.setRowCount(0)
-        self._set_cat_mode("convert", "小猫正在整理花型书籍")
+        self._set_cat_mode("convert", "小女孩正在整理花型书籍")
         self.search_status.setText("正在扫描花型库并更新 JPG 库…")
         self._start_task(
             lambda report: scan_and_convert(self.source_root, self.output_root, db_path, report),
@@ -498,7 +498,7 @@ class MainWindow(QMainWindow):
         )
 
     def _scan_finished(self, summary: dict):
-        self._set_cat_mode("idle", "小猫整理完啦，继续打盹")
+        self._set_cat_mode("idle", "小女孩整理完啦，回去看书")
         self._populate_scope()
         self.search_status.setText(
             f"扫描完成：发现 {summary['found']} 个文件，新增或转换 {summary['converted']} 个，"
@@ -507,7 +507,7 @@ class MainWindow(QMainWindow):
         )
         self.statusBar().showMessage("JPG 库已同步")
         if not self.search_dialog.isVisible() and not self.convert_dialog.isVisible() and not self.settings_dialog.isVisible():
-            self.pixel_workbench.set_activity("花型已整理上架 · 小猫回去打盹啦")
+            self.pixel_workbench.set_activity("花型已整理上架 · 小女孩回去看书啦")
 
     def _update_interval_limit(self, *_):
         if self.interval_unit.currentData() == "days":
@@ -606,7 +606,7 @@ class MainWindow(QMainWindow):
         db_path = self._database_path()
         threshold = self.threshold.value()
         self.results_view.set_results([], "搜索结果")
-        self._set_cat_mode("search", "小猫正在翻找花型")
+        self._set_cat_mode("search", "小女孩正在翻找花型")
         self.search_started = time.monotonic()
         self.search_status.setText("正在搜索…")
         self.search_clock.start(1000)
@@ -640,22 +640,22 @@ class MainWindow(QMainWindow):
         scope = selected.data(0, Qt.ItemDataRole.UserRole) if selected else ""
         root_label = Path(scope).name if scope else (self.source_root.name if self.source_root else "搜索结果")
         self.results_view.set_results(results, root_label, scope or "")
-        self._set_cat_mode("idle", "小猫找到啦，回书架休息")
+        self._set_cat_mode("idle", "小女孩找到啦，回柜台看书")
         elapsed = format_elapsed(time.monotonic() - self.search_started)
         self.search_status.setText(f"搜索完成，耗时 {elapsed}，找到 {len(results)} 个结果。")
         self.statusBar().showMessage(f"搜图耗时 {elapsed}")
-        self.pixel_workbench.set_activity(f"找到 {len(results)} 个花型 · 小猫回去打盹啦")
+        self.pixel_workbench.set_activity(f"找到 {len(results)} 个花型 · 小女孩回柜台看书啦")
 
     def _update_search_clock(self):
         self.search_status.setText(f"正在搜索，已耗时 {format_elapsed(time.monotonic() - self.search_started)}")
 
     def _on_failure(self, message: str):
-        self._set_cat_mode("idle", "小猫在书架旁打盹")
+        self._set_cat_mode("idle", "小女孩在柜台看书")
         self.search_clock.stop()
         self.search_status.setText("任务失败")
         QMessageBox.warning(self, "任务失败", message)
         if not self.pixel_workbench.search_dialog.isVisible() and not self.pixel_workbench.convert_dialog.isVisible() and not self.pixel_workbench.settings_dialog.isVisible():
-            self.pixel_workbench.set_activity("任务失败 · 小猫回去休息")
+            self.pixel_workbench.set_activity("任务失败 · 小女孩回柜台看书")
 
     def _task_finished(self):
         self.busy = False

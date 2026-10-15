@@ -80,14 +80,12 @@ class PixelBookshop(QWidget):
         }
         self.object_images = {key: sprite.toImage() for key, sprite in self.objects.items()}
         self.hover_outlines = {}
-        self.cats = {mode: QPixmap(str(assets / f"cat-glasses-{mode}.png")) for mode in ("idle", "search", "convert")}
-        self.animations = {}
-        for name, count in (("search", 48),):
-            sheet = QPixmap(str(assets / "cat-glasses-search-motion.png"))
-            self.animations[name] = [sheet.copy((index % 8) * 256, (index // 8) * 256, 256, 256) for index in range(count)] if not sheet.isNull() else []
+        sheet = QPixmap(str(assets / "girl-reading-sheet.png"))
+        frames = [sheet.copy((index % 4) * 320, (index // 4) * 320, 320, 320) for index in range(16)] if not sheet.isNull() else []
+        self.animations = {mode: frames for mode in ("idle", "search", "convert")}
         self.mode = "idle"
         self.mode_started = time.monotonic()
-        self.activity = "小猫在书架旁打盹"
+        self.activity = "小女孩在柜台看书"
         self.frame = 0
         self.cat_x = .525
         self.hover = ""
@@ -190,34 +188,19 @@ class PixelBookshop(QWidget):
         counter=placements["search"]
         counter_surface=counter.top()+counter.height()*.10
         if self.mode=="idle": p.drawPixmap(counter,self.objects["search"],QRectF(self.objects["search"].rect()))
-        cat = self.cats.get(self.mode, self.cats["idle"])
         animation = self.animations.get(self.mode, [])
         if animation:
-            fps = 5
-            cat = animation[int((time.monotonic() - self.mode_started) * fps) % len(animation)]
-        if not cat.isNull():
-            cat_height = round(dh * ({"idle":.10,"search":.13,"convert":.12}[self.mode]))
-            cat_width = round(cat.width() * cat_height / cat.height())
-            bob = math.sin(self.frame * math.tau / 8) if self.mode == "idle" else 0
-            cat_bottom=counter_surface+cat_height*.028
-            target = QRectF(ox+self.cat_x*dw-cat_width/2, cat_bottom-cat_height+bob, cat_width, cat_height)
+            girl = animation[int((time.monotonic() - self.mode_started) * 1000 / 190) % len(animation)]
+        else:
+            girl = QPixmap()
+        if not girl.isNull():
+            girl_height = round(dh * ({"idle":.10,"search":.13,"convert":.12}[self.mode]))
+            girl_width = round(girl.width() * girl_height / girl.height())
+            girl_bottom=counter_surface+girl_height*.028
+            target = QRectF(ox+self.cat_x*dw-girl_width/2, girl_bottom-girl_height, girl_width, girl_height)
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-            p.drawPixmap(target, cat, QRectF(cat.rect()))
+            p.drawPixmap(target, girl, QRectF(girl.rect()))
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
-            if self.mode=="idle":
-                p.setPen(QColor("#fff3db")); p.setFont(QFont("Microsoft YaHei UI", max(10, round(dh*.018)), QFont.Weight.Bold))
-                p.drawText(QPointF(target.left()+cat_width*.58,target.top()-4),"Z")
-                p.setFont(QFont("Microsoft YaHei UI", max(8, round(dh*.013)), QFont.Weight.Bold))
-                p.drawText(QPointF(target.left()+cat_width*.72,target.top()-cat_height*.08),"z")
-                bubble_phase=(self.frame%32)/32
-                if bubble_phase<.9:
-                    radius=max(5,cat_height*(.045+bubble_phase*.04))
-                    bubble_x=target.left()+cat_width*.48
-                    bubble_y=target.top()+cat_height*(.78-bubble_phase*.16)
-                    p.setPen(QPen(QColor(202,244,247,235),1)); p.setBrush(QColor(210,246,246,105))
-                    p.drawEllipse(QPointF(bubble_x,bubble_y),radius,radius)
-                    p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(255,255,240,190))
-                    p.drawEllipse(QPointF(bubble_x-radius*.28,bubble_y-radius*.32),max(1,radius*.17),max(1,radius*.17))
         if self.mode!="idle":
             p.drawPixmap(counter,self.objects["search"],QRectF(self.objects["search"].rect()))
         activity_rect=QRectF(dw*.40,dh*.022,dw*.20,dh*.043)
@@ -274,12 +257,12 @@ class PixelWorkbench:
         w=self.w
         self.scene=PixelBookshop()
         self.scene.action.connect(self._open_feature)
-        self.scene.mode_changed.connect(lambda mode:self.set_activity({"idle":"小猫在书架旁打盹","search":"小猫正在翻箱倒柜找花型","convert":"小猫正在忙碌整理、上架花型书籍"}.get(mode,"小猫在工作")))
+        self.scene.mode_changed.connect(lambda mode:self.set_activity({"idle":"小女孩在柜台看书","search":"小女孩正在翻找花型","convert":"小女孩正在整理、上架花型书籍"}.get(mode,"小女孩在工作")))
         self._build_settings_page()
         self._build_search_page()
         self._build_convert_page()
         w.mascot=self.scene
-        w.mascot_label=QLabel("小猫在书架旁打盹")
+        w.mascot_label=QLabel("小女孩在柜台看书")
         return self.scene
 
     def set_activity(self,text):
@@ -303,7 +286,7 @@ class PixelWorkbench:
         layout.addLayout(row)
 
     def _paint_mascot_icon(self,label,mode):
-        icon=self.scene.animations[mode][0] if mode in self.scene.animations and self.scene.animations[mode] else self.scene.cats.get(mode,self.scene.cats["idle"])
+        icon=self.scene.animations[mode][0]
         pixmap=icon.scaled(32,32,Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation)
         label.setPixmap(pixmap)
 
@@ -311,7 +294,7 @@ class PixelWorkbench:
         w=self.w
         self.search_dialog,layout=self._dialog("图搜图 · 花型书店",(1050,760))
         self.active_dialog=self.search_dialog
-        self._panel_header(self.search_dialog,layout,"图搜图 · 找花型","把客户照片或局部花型交给小猫，去书架里找相似款")
+        self._panel_header(self.search_dialog,layout,"图搜图 · 找花型","把客户照片或局部花型交给小女孩，去书架里找相似款")
         query_box=QGroupBox("客户提供的花型")
         query_layout=QVBoxLayout(query_box)
         w.query_preview=QLabel("上传或粘贴一张客户图片")
@@ -325,14 +308,14 @@ class PixelWorkbench:
         buttons.addSpacing(12); buttons.addWidget(QLabel("相似度")); w.similarity_label=QLabel(); buttons.addWidget(w.similarity_label); buttons.addStretch(1)
         w.threshold.valueChanged.connect(lambda value:w.similarity_label.setText(f"{value}%"))
         w.similarity_label.setText(f"{w.threshold.value()}%")
-        w.search_button=QPushButton("小猫，开始找花型"); w.search_button.clicked.connect(w.start_search); buttons.addWidget(w.search_button)
+        w.search_button=QPushButton("小姑娘，开始找花型"); w.search_button.clicked.connect(w.start_search); buttons.addWidget(w.search_button)
         query_layout.addLayout(buttons); layout.addWidget(query_box)
         split=QSplitter(Qt.Orientation.Horizontal)
         scope_box=QGroupBox("搜索范围：整本花型库或指定子文件夹")
         scope_layout=QVBoxLayout(scope_box); w.scope_tree=QTreeWidget(); w.scope_tree.setHeaderHidden(True); scope_layout.addWidget(w.scope_tree)
         split.addWidget(scope_box)
         results_box=QGroupBox("找到的花型")
-        results_layout=QVBoxLayout(results_box); w.search_status=QLabel("选好图片和目录，小猫就去书架上找。"); w.search_status.setWordWrap(True)
+        results_layout=QVBoxLayout(results_box); w.search_status=QLabel("选好图片和目录，小女孩就去书架上找。"); w.search_status.setWordWrap(True)
         results_layout.addWidget(w.search_status); w.results_view=self.results_view_type(); w.results_view.setMinimumHeight(210)
         w.results_view.open_requested.connect(w._open_path); results_layout.addWidget(w.results_view,1)
         split.addWidget(results_box); split.setStretchFactor(0,1); split.setStretchFactor(1,4); layout.addWidget(split,1)
@@ -342,7 +325,7 @@ class PixelWorkbench:
         w=self.w
         self.convert_dialog,layout=self._dialog("花型库 · 整理上架",(900,650))
         self.active_dialog=self.convert_dialog
-        self._panel_header(self.convert_dialog,layout,"花型库 · JPG 上架","小猫会扫描花型库，将新花型整理成 JPG 放上书架")
+        self._panel_header(self.convert_dialog,layout,"花型库 · JPG 上架","小女孩会扫描花型库，将新花型整理成 JPG 放上书架")
         folders=QGroupBox("书报亭的两个仓库")
         form=QFormLayout(folders)
         for title,attribute in (("原花型库","source_edit"),("JPG 书架","output_edit")):
@@ -391,7 +374,7 @@ class PixelWorkbench:
 
     def _return_idle(self):
         if not self.w.busy:
-            self.w._set_cat_mode("idle","小猫在书架旁打盹")
+            self.w._set_cat_mode("idle","小女孩在柜台看书")
 
     def _open_feature(self,key):
         for dialog in (self.search_dialog,self.convert_dialog,self.settings_dialog):
